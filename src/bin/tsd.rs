@@ -1,3 +1,7 @@
+extern crate tsundoku;
+
+use tsundoku::datamodel::{Database, Entry};
+
 #[macro_use]
 extern crate clap;
 use clap::App;
