@@ -1,44 +1,80 @@
+use chrono::naive::NaiveDateTime;
 use rusqlite::NO_PARAMS;
 use rusqlite::{Connection, Result};
-
-pub struct Entry<'a> {
-    pub link: &'a str,
-    pub comment: &'a str,
-    pub tags: Vec<&'a str>,
-}
 
 //
 // This is the rough overview of what the databse looks like.
 //
-// +----------------------------------+
-// | Links                            |     +---------------------------------+
-// |                                  |     | LinkTags                        |
-// | = id       : integer primary key <--+  |                                 |
-// | = link     : text                |  |  | = id      : integer primary key |
-// | = comments : text                |  +--+ = link_id : integer foreign key |
-// |                                  |  +--+ = tag_id  : integer foreign key |
-// +----------------------------------+  |  |                                 |
-//                                       |  +---------------------------------+
-// +----------------------------------+  |
-// | Tags                             |  |
-// |                                  |  |
-// | = id  : integer primary key      <--+
+// +-----------------------------------+
+// | Links                             |     +---------------------------------+
+// |                                   |     | LinkTags                        |
+// | = id        : integer primary key <--+  |                                 |
+// | = link      : text                |  |  | = id      : integer primary key |
+// | = comments  : text                |  +--+ = link_id : integer foreign key |
+// | = archive   : integer             |  +--+ = tag_id  : integer foreign key |
+// | = timestamp : text                |  |  |                                 |
+// |                                   |  |  +---------------------------------+
+// +-----------------------------------+  |
+//                                        |
+// +----------------------------------+   |
+// | Tags                             |   |
+// |                                  |   |
+// | = id  : integer primary key      <---+
 // | = tag : text                     |
 // |                                  |
 // +----------------------------------+
+//
+// Rows in the 'Tags' table correspond directly to &str variable,
+// rows in the Links table correspond (roughly) to an "Entry", associated with
+// a particular archive.
 
+/// Archive - a marker of where we "are" in reading a link. Right now, this means it's either in the queue (waiting to be read), or in the Archive (it's been read). This may be expanded to further archives (e.g. "InProgress", "ReReadLater") hence why it is an enum not a bool.
+pub enum Archive {
+    Queue,
+    Archive,
+}
+
+/// Entry - An entry in the database
+pub struct Entry<'a> {
+    pub link: &'a str,              // Contents of the link
+    pub comment: Option<&'a str>,   // Comment (optional) on the link
+    pub tags: Option<Vec<&'a str>>, // Tags (also optional) for categorising the link
+    pub archive: Archive,           // Have we read this link? Do we want to put it somewhere?
+    pub timestamp: NaiveDateTime,   // When did we add this link to the database
+}
+
+/// The database of links
 pub struct Database {
     conn: Connection,
 }
 
+#[derive(PartialEq, Debug)]
 pub enum TagAddResult {
     TagAlreadyExists,
     TagId(i64),
 }
 
+#[derive(PartialEq, Debug)]
 pub enum TagQueryResult {
     TagNotFound,
     TagId(i64),
+}
+
+impl PartialEq<TagQueryResult> for TagAddResult {
+    fn eq(&self, other: &TagQueryResult) -> bool {
+        match (self, other) {
+            (TagAddResult::TagId(i), TagQueryResult::TagId(j)) => i == j,
+            _ => false,
+        }
+    }
+}
+impl PartialEq<TagAddResult> for TagQueryResult {
+    fn eq(&self, other: &TagAddResult) -> bool {
+        match (self, other) {
+            (TagQueryResult::TagId(i), TagAddResult::TagId(j)) => i == j,
+            _ => false,
+        }
+    }
 }
 
 impl Database {
@@ -85,7 +121,7 @@ impl Database {
     /// # Get a tag that exists
     ///
     /// ```
-    /// # use tsundoku::datamodel::{Database, Entry};
+    /// # use tsundoku::datamodel::*;
     /// let db = Database::open_in_memory().unwrap();
     /// db.add_tag("tag 0");
     /// db.add_tag("tag 1");
@@ -95,12 +131,12 @@ impl Database {
     ///
     /// let tag_id = db.get_tag_id("tag 3").unwrap();
     ///
-    /// assert_eq!(tag_id[0], 4);
+    /// assert_eq!(tag_id, TagQueryResult::TagId(4));
     /// ```
     ///
     /// # Get a tag that doesn't exist
     /// ```
-    /// # use tsundoku::datamodel::{Database, Entry};
+    /// # use tsundoku::datamodel::*;
     /// let db = Database::open_in_memory().unwrap();
     /// let tag_id = db.get_tag_id("This tag doesn't exist");
     /// assert_eq!(tag_id, Ok(TagQueryResult::TagNotFound));
@@ -115,12 +151,11 @@ impl Database {
             Some(Err(e)) => Err(e),
             None => Ok(TagQueryResult::TagNotFound),
         }
-        // tag_iter.collect()[0];
     }
 
     /// # Test if a database contains a tag
     /// ```
-    /// use tsundoku::datamodel::{Database, Entry};
+    /// use tsundoku::datamodel::*;
     /// let db = Database::open_in_memory().unwrap();
     /// db.add_tag("tag 0").unwrap();
     /// let tag_exists = db.contains_tag("tag 0").unwrap();
@@ -135,7 +170,7 @@ impl Database {
 
     /// # List tags
     /// ```
-    /// # use tsundoku::datamodel::{Database, Entry};
+    /// # use tsundoku::datamodel::*;
     /// let db = Database::open_in_memory().unwrap();
     /// let tags: Vec<&str> = vec!["tag 0", "tag 1", "tag 2", "tag 3", "tag 4"];
     /// for tag in &tags {
@@ -151,18 +186,22 @@ impl Database {
     }
 
     pub fn add_entry(&self, entry: Entry) -> Result<usize> {
-        self.add_link(entry.link, entry.comment)
-    }
+        // set up values for the parameters
+        let link = entry.link;
+        let comment = match entry.comment {
+            Some(c) => c,
+            None => "",
+        };
+        let archive = Archive::Queue as u8; // we *always* add to the queue first
+        let timestamp = entry.timestamp; // convert the timestamp to seconds
 
-    // Add a link to the 'links' table
-    fn add_link(&self, link: &str, comment: &str) -> Result<usize> {
         // Add the link itself to the link table
         self.conn.execute(
             "
-            insert into links (link_id, link, comment)
-                values (null, ?1, ?2)
+            insert into links (link_id, link, comment, archive, timestamp)
+                values (null, ?1, ?2, ?3, ?4)
         ",
-            params![link, comment],
+            params![link, comment, archive, timestamp],
         )
     }
 
@@ -202,7 +241,10 @@ mod test {
             TagAddResult::TagId(i) => i,
         };
         // Query for the tag, and get the id
-        let query_id = db.get_tag_id("test tag").unwrap()[0];
+        let query_id = match db.get_tag_id("test tag").unwrap() {
+            TagQueryResult::TagNotFound => panic!("Tag should exist and show up in query!)"),
+            TagQueryResult::TagId(i) => i,
+        };
 
         assert_eq!(add_id, query_id);
     }

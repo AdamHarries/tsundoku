@@ -12,7 +12,8 @@ path="src/tsundoku/lib.rs"
 
 [dependencies]
 clap = "~2.27.0"
+chrono = "0.4"
 
 [dependencies.rusqlite]
-version = "0.21.0"
-features = ["bundled"]
+version = "0.23.1"
+features = ["bundled", "chrono"]
