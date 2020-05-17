@@ -1,10 +1,10 @@
 use rusqlite::NO_PARAMS;
 use rusqlite::{Connection, Result};
 
-pub struct Entry {
-    pub link: String,
-    pub comment: String,
-    pub tags: Vec<String>,
+pub struct Entry<'a> {
+    pub link: &'a str,
+    pub comment: &'a str,
+    pub tags: Vec<&'a str>,
 }
 
 //
@@ -29,6 +29,16 @@ pub struct Entry {
 
 pub struct Database {
     conn: Connection,
+}
+
+pub enum TagAddResult {
+    TagAlreadyExists,
+    TagId(i64),
+}
+
+pub enum TagQueryResult {
+    TagNotFound,
+    TagId(i64),
 }
 
 impl Database {
@@ -84,7 +94,7 @@ impl Database {
     /// db.add_tag("tag 4");
     ///
     /// let tag_id = db.get_tag_id("tag 3").unwrap();
-
+    ///
     /// assert_eq!(tag_id[0], 4);
     /// ```
     ///
@@ -93,14 +103,19 @@ impl Database {
     /// # use tsundoku::datamodel::{Database, Entry};
     /// let db = Database::open_in_memory().unwrap();
     /// let tag_id = db.get_tag_id("This tag doesn't exist");
-    /// assert_eq!(tag_id, Ok(vec![]));
+    /// assert_eq!(tag_id, Ok(TagQueryResult::TagNotFound));
     /// ```
-    pub fn get_tag_id(&self, tag: &str) -> Result<Vec<u8>> {
+    pub fn get_tag_id(&self, tag: &str) -> Result<TagQueryResult> {
         let mut stmt = self
             .conn
             .prepare("select tag_id from tags where tag == ?1")?;
-        let tag_iter = stmt.query_map(params![tag], |row| Ok(row.get(0)?))?;
-        tag_iter.collect()
+        let mut tag_iter = stmt.query_map(params![tag], |row| Ok(row.get(0)?))?;
+        match tag_iter.next() {
+            Some(Ok(i)) => Ok(TagQueryResult::TagId(i)),
+            Some(Err(e)) => Err(e),
+            None => Ok(TagQueryResult::TagNotFound),
+        }
+        // tag_iter.collect()[0];
     }
 
     /// # Test if a database contains a tag
@@ -112,7 +127,10 @@ impl Database {
     /// assert!(tag_exists);
     /// ```
     pub fn contains_tag(&self, tag: &str) -> Result<bool> {
-        self.get_tag_id(tag).map(|v| v.len() > 0)
+        match self.get_tag_id(tag)? {
+            TagQueryResult::TagId(_) => Ok(true),
+            TagQueryResult::TagNotFound => Ok(false),
+        }
     }
 
     /// # List tags
@@ -133,53 +151,59 @@ impl Database {
     }
 
     pub fn add_entry(&self, entry: Entry) -> Result<usize> {
+        self.add_link(entry.link, entry.comment)
+    }
+
+    // Add a link to the 'links' table
+    fn add_link(&self, link: &str, comment: &str) -> Result<usize> {
+        // Add the link itself to the link table
         self.conn.execute(
             "
             insert into links (link_id, link, comment)
                 values (null, ?1, ?2)
         ",
-            params![entry.link, entry.comment],
+            params![link, comment],
         )
     }
 
-    pub fn add_tag(&self, tag: &str) -> Result<usize> {
-        self.conn.execute(
-            "insert into tags (tag_id, tag) values (NULL, ?1)",
-            params![tag],
-        )
+    /// Add a tag to the database. If the tag already exists, this method does nothing.
+    pub fn add_tag(&self, tag: &str) -> Result<TagAddResult> {
+        self.contains_tag(tag).and_then(|contains| {
+            if contains {
+                Ok(TagAddResult::TagAlreadyExists)
+            } else {
+                self.conn
+                    .execute(
+                        "insert into tags (tag_id, tag) values (NULL, ?1)",
+                        params![tag],
+                    )
+                    .map(|_| TagAddResult::TagId(self.conn.last_insert_rowid()))
+            }
+        })
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::{Database, Entry};
+#[cfg(test)]
+mod test {
+    use super::*;
+    // Tests for private members.
+    #[test]
+    fn add_tag_get_tag_same() {
+        let db = Database::open_in_memory().unwrap();
+        // Add some tags so that we don't just have zero
+        let tags: Vec<&str> = vec!["tag 0", "tag 1", "tag 2", "tag 3", "tag 4"];
 
-//     // Helper methods
-//     fn add_tags_to_db(db: &Database) -> Vec<&str> {
-//         let tags: Vec<&str> = vec!["tag 0", "tag 1", "tag 2", "tag 3", "tag 4"];
+        for tag in &tags {
+            db.add_tag(tag).unwrap();
+        }
+        // Add a tag and get the id from that
+        let add_id = match db.add_tag("test tag").unwrap() {
+            TagAddResult::TagAlreadyExists => panic!("tag should not already exist!"),
+            TagAddResult::TagId(i) => i,
+        };
+        // Query for the tag, and get the id
+        let query_id = db.get_tag_id("test tag").unwrap()[0];
 
-//         for tag in &tags {
-//             db.add_tag(tag).unwrap();
-//         }
-
-//         tags
-//     }
-
-//     #[test]
-//     fn get_existing_tag_id() {
-//         let db = Database::open_in_memory().unwrap();
-//         let _ = add_tags_to_db(&db);
-//         let tag_id = db.get_tag_id("tag 3").unwrap();
-
-//         assert_eq!(tag_id[0], 4);
-//     }
-
-//     #[test]
-//     fn get_non_existing_tag_id() {
-//         let db = Database::open_in_memory().unwrap();
-//         let _ = add_tags_to_db(&db);
-//         let tag_id = db.get_tag_id("This tag doesn't exist");
-
-//         assert_eq!(tag_id, Ok(vec![]));
-//     }
-// }
+        assert_eq!(add_id, query_id);
+    }
+}
