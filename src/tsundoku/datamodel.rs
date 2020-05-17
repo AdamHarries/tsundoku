@@ -202,7 +202,23 @@ impl Database {
                 values (null, ?1, ?2, ?3, ?4)
         ",
             params![link, comment, archive, timestamp],
-        )
+        );
+
+        // Get the ID of the entry we just pushed
+        let link_id = self.conn.last_insert_rowid();
+
+        // And iterate through the tags, pushing them to the db.
+        match entry.tags {
+            Some(ts) => {
+                for tag in ts {
+                    self.add_tag(tag);
+                    // also need to link them!
+                }
+            }
+            None => {} //nothing to do
+        };
+
+        Ok(0)
     }
 
     /// Add a tag to the database. If the tag already exists, this method does nothing.
@@ -220,6 +236,8 @@ impl Database {
             }
         })
     }
+
+    fn tag_link(&self, tag_id: i64, link_id: i64) {}
 }
 
 #[cfg(test)]
