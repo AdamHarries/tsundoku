@@ -2,6 +2,10 @@ use chrono::naive::NaiveDateTime;
 use rusqlite::NO_PARAMS;
 use rusqlite::{Connection, Result};
 
+// TODO: Right now, the Tsundoku data model and database (i.e. sqlite)
+// implementation are tied together. They should be separated out and the
+// datamodel refactored into a trait with a separate database implementation.
+
 //
 // This is the rough overview of what the databse looks like.
 //
