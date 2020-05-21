@@ -38,6 +38,16 @@ pub enum Archive {
     Archive,
 }
 
+/// Tag - a sorting/grouping string that can be used to query for specific entries
+pub struct Tag<'a> {
+    detail: &'a str,
+}
+
+/// Comment - A comment on a link, similar to a tag but semanticaly differnt: links/tags are many:many, but links/comments are 1:1
+pub struct Comment<'a> {
+    detail: &'a str,
+}
+
 /// Entry - An entry in the database
 pub struct Entry<'a> {
     pub link: &'a str,              // Contents of the link
